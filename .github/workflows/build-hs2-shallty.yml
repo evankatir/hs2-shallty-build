@@ -1,0 +1,42 @@
+name: Build patched HS2 ShalltyUtils
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout ShalltyUtils 1.3.3 fork
+        uses: actions/checkout@v4
+        with:
+          repository: Mmc1xs/ShalltyUtils
+          path: src/ShalltyUtils
+
+      - name: Checkout Shared sources
+        uses: actions/checkout@v4
+        with:
+          repository: ShalltyB/ShalltyPlugins-Shared
+          path: src/Shared
+
+      - name: Checkout ToolBox sources
+        uses: actions/checkout@v4
+        with:
+          repository: ShalltyB/ShalltyPlugins-ToolBox
+          path: src/ToolBox
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup NuGet
+        uses: NuGet/setup-nuget@v2
+
+      - name: Create NuGet config
+        shell: pwsh
+        run: |
+          @'
+          <?xml version="1.0" encoding="utf-8"?>
+          <configuration>
+            <packageSources>
