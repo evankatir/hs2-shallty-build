@@ -54,24 +54,52 @@ jobs:
         run: |
           nuget restore src/ShalltyUtils/ShalltyUtils.HS2/packages.config -PackagesDirectory src/packages -ConfigFile nuget.config -NonInteractive
 
-      - name: Download current Timeline DLL
+      - name: Extract current Timeline DLL
         shell: pwsh
         run: |
           $url = "https://github.com/IllusionMods/HSPlugins/releases/download/r2.25/HS2_HSPlugins_2026-07-30.zip"
           Invoke-WebRequest -Uri $url -OutFile hsplugins.zip
-          Expand-Archive hsplugins.zip -DestinationPath hsplugins
 
-          Write-Host "DLLs found in HSPlugins package:"
-          Get-ChildItem hsplugins -Recurse -File -Filter *.dll | ForEach-Object { Write-Host $_.FullName }
+          New-Item -ItemType Directory -Force -Path hsplugins-root | Out-Null
+          Expand-Archive hsplugins.zip -DestinationPath hsplugins-root -Force
 
-          New-Item -ItemType Directory -Force -Path src/packages/HSPlugins.HoneySelect2 | Out-Null
+          $timeline = Get-ChildItem hsplugins-root -Recurse -File -Filter Timeline.dll | Select-Object -First 1
 
-          $timeline = Get-ChildItem hsplugins -Recurse -File -Filter Timeline.dll | Select-Object -First 1
           if (-not $timeline) {
-            throw "Could not find Timeline.dll in HSPlugins release"
+            $archives = Get-ChildItem hsplugins-root -Recurse -File | Where-Object { $_.Extension -ieq ".zip" }
+            $i = 0
+
+            foreach ($archive in $archives) {
+              $dest = "hsplugins-expanded/$i"
+              New-Item -ItemType Directory -Force -Path $dest | Out-Null
+
+              try {
+                Expand-Archive -LiteralPath $archive.FullName -DestinationPath $dest -Force
+              }
+              catch {
+                Write-Host "Skipping archive: $($archive.FullName)"
+              }
+
+              $i++
+            }
+
+            $timeline = Get-ChildItem hsplugins-expanded -Recurse -File -Filter Timeline.dll -ErrorAction SilentlyContinue | Select-Object -First 1
           }
 
-          Copy-Item $timeline.FullName "src/packages/HSPlugins.HoneySelect2/Timeline.dll"
+          if (-not $timeline) {
+            Write-Host "Top-level files:"
+            Get-ChildItem hsplugins-root -Recurse -File | ForEach-Object { Write-Host $_.FullName }
+
+            Write-Host "Expanded files:"
+            Get-ChildItem hsplugins-expanded -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+
+            throw "Timeline.dll was not found after expanding nested HSPlugins archives"
+          }
+
+          Write-Host "Using Timeline DLL: $($timeline.FullName)"
+
+          New-Item -ItemType Directory -Force -Path src/packages/HSPlugins.HoneySelect2 | Out-Null
+          Copy-Item $timeline.FullName "src/packages/HSPlugins.HoneySelect2/Timeline.dll" -Force
 
       - name: Patch HS2 build configuration and animation baking
         shell: pwsh
