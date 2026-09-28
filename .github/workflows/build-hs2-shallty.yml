@@ -54,22 +54,24 @@ jobs:
         run: |
           nuget restore src/ShalltyUtils/ShalltyUtils.HS2/packages.config -PackagesDirectory src/packages -ConfigFile nuget.config -NonInteractive
 
-      - name: Download current HS2 HSPlugins DLLs
+      - name: Download current Timeline DLL
         shell: pwsh
         run: |
           $url = "https://github.com/IllusionMods/HSPlugins/releases/download/r2.25/HS2_HSPlugins_2026-07-30.zip"
           Invoke-WebRequest -Uri $url -OutFile hsplugins.zip
           Expand-Archive hsplugins.zip -DestinationPath hsplugins
 
+          Write-Host "DLLs found in HSPlugins package:"
+          Get-ChildItem hsplugins -Recurse -File -Filter *.dll | ForEach-Object { Write-Host $_.FullName }
+
           New-Item -ItemType Directory -Force -Path src/packages/HSPlugins.HoneySelect2 | Out-Null
 
-          foreach ($dll in @("HS2PE.dll", "NodesConstraints.dll", "Timeline.dll")) {
-            $found = Get-ChildItem hsplugins -Recurse -File -Filter $dll | Select-Object -First 1
-            if (-not $found) {
-              throw "Could not find $dll in HSPlugins release"
-            }
-            Copy-Item $found.FullName "src/packages/HSPlugins.HoneySelect2/$dll"
+          $timeline = Get-ChildItem hsplugins -Recurse -File -Filter Timeline.dll | Select-Object -First 1
+          if (-not $timeline) {
+            throw "Could not find Timeline.dll in HSPlugins release"
           }
+
+          Copy-Item $timeline.FullName "src/packages/HSPlugins.HoneySelect2/Timeline.dll"
 
       - name: Patch HS2 build configuration and animation baking
         shell: pwsh
@@ -79,26 +81,43 @@ jobs:
 
           $oldConstants = "<DefineConstants>TRACE;KK</DefineConstants>"
           $newConstants = "<DefineConstants>TRACE;HS2;BEPINEX;HONEYSELECT2</DefineConstants>"
+
           if (-not $p.Contains($oldConstants)) {
             throw "HS2 Release constants line not found"
           }
+
           $p = $p.Replace($oldConstants, $newConstants)
+
+          $p = [regex]::Replace(
+            $p,
+            '(?s)\s*<Reference Include="HS2PE">.*?</Reference>',
+            ''
+          )
+
+          $p = [regex]::Replace(
+            $p,
+            '(?s)\s*<Reference Include="NodesConstraints[^"]*">.*?</Reference>',
+            ''
+          )
 
           $p = [regex]::Replace(
             $p,
             "(?s)<PostBuildEvent>.*?</PostBuildEvent>",
             "<PostBuildEvent></PostBuildEvent>"
           )
+
           Set-Content $proj $p -Encoding UTF8
 
           $file = "src/ShalltyUtils/ShalltyUtils.Core/TimelineBaking/ShalltyUtils.BakeAnimation.cs"
           $c = Get-Content $file -Raw
 
           $oldSwitch = "switch (name)"
-          $newSwitch = "switch (name.ToLowerInvariant())"
+          $newSwitch = "switch ((name ?? string.Empty).ToLowerInvariant())"
+
           if (-not $c.Contains($oldSwitch)) {
             throw "ShouldBakeBones switch line not found"
           }
+
           $c = $c.Replace($oldSwitch, $newSwitch)
 
           $replacements = @{
@@ -122,12 +141,15 @@ jobs:
 
           $oldFinger = 'List<GuideObject> guideObjectFK = boneList.Where(targetInfo => transformNames.Contains(targetInfo.guideObject.transformTarget.name)).Select(targetInfo => targetInfo.guideObject).ToList();'
           $newFinger = 'List<GuideObject> guideObjectFK = boneList.Where(targetInfo => transformNames.Contains(targetInfo.guideObject.transformTarget.name, StringComparer.OrdinalIgnoreCase)).Select(targetInfo => targetInfo.guideObject).ToList();'
+
           if (-not $c.Contains($oldFinger)) {
             throw "FK/finger matching line not found"
           }
+
           $c = $c.Replace($oldFinger, $newFinger)
 
           $oldEmpty = '            if (interpolableList.Count == 0) return;'
+
           if (-not $c.Contains($oldEmpty)) {
             throw "Silent-return line not found"
           }
@@ -140,6 +162,7 @@ jobs:
             '                return;',
             '            }'
           )
+
           $newEmpty = $newEmptyLines -join "`r`n"
           $c = $c.Replace($oldEmpty, $newEmpty)
 
