@@ -36,7 +36,127 @@ jobs:
       - name: Create NuGet config
         shell: pwsh
         run: |
-          @'
-          <?xml version="1.0" encoding="utf-8"?>
-          <configuration>
-            <packageSources>
+          $lines = @(
+            '<?xml version="1.0" encoding="utf-8"?>',
+            '<configuration>',
+            '  <packageSources>',
+            '    <clear />',
+            '    <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />',
+            '    <add key="BepInEx" value="https://nuget.bepinex.dev/v3/index.json" />',
+            '    <add key="IllusionLibs" value="https://pkgs.dev.azure.com/IllusionMods/Nuget/_packaging/IllusionMods/nuget/v3/index.json" />',
+            '  </packageSources>',
+            '</configuration>'
+          )
+          $lines | Set-Content -Path nuget.config -Encoding UTF8
+
+      - name: Restore compile-time packages
+        shell: pwsh
+        run: |
+          nuget restore src/ShalltyUtils/ShalltyUtils.HS2/packages.config -PackagesDirectory src/packages -ConfigFile nuget.config -NonInteractive
+
+      - name: Download current HS2 HSPlugins DLLs
+        shell: pwsh
+        run: |
+          $url = "https://github.com/IllusionMods/HSPlugins/releases/download/r2.25/HS2_HSPlugins_2026-07-30.zip"
+          Invoke-WebRequest -Uri $url -OutFile hsplugins.zip
+          Expand-Archive hsplugins.zip -DestinationPath hsplugins
+
+          New-Item -ItemType Directory -Force -Path src/packages/HSPlugins.HoneySelect2 | Out-Null
+
+          foreach ($dll in @("HS2PE.dll", "NodesConstraints.dll", "Timeline.dll")) {
+            $found = Get-ChildItem hsplugins -Recurse -File -Filter $dll | Select-Object -First 1
+            if (-not $found) {
+              throw "Could not find $dll in HSPlugins release"
+            }
+            Copy-Item $found.FullName "src/packages/HSPlugins.HoneySelect2/$dll"
+          }
+
+      - name: Patch HS2 build configuration and animation baking
+        shell: pwsh
+        run: |
+          $proj = "src/ShalltyUtils/ShalltyUtils.HS2/ShalltyUtils.HS2.csproj"
+          $p = Get-Content $proj -Raw
+
+          $oldConstants = "<DefineConstants>TRACE;KK</DefineConstants>"
+          $newConstants = "<DefineConstants>TRACE;HS2;BEPINEX;HONEYSELECT2</DefineConstants>"
+          if (-not $p.Contains($oldConstants)) {
+            throw "HS2 Release constants line not found"
+          }
+          $p = $p.Replace($oldConstants, $newConstants)
+
+          $p = [regex]::Replace(
+            $p,
+            "(?s)<PostBuildEvent>.*?</PostBuildEvent>",
+            "<PostBuildEvent></PostBuildEvent>"
+          )
+          Set-Content $proj $p -Encoding UTF8
+
+          $file = "src/ShalltyUtils/ShalltyUtils.Core/TimelineBaking/ShalltyUtils.BakeAnimation.cs"
+          $c = Get-Content $file -Raw
+
+          $oldSwitch = "switch (name)"
+          $newSwitch = "switch (name.ToLowerInvariant())"
+          if (-not $c.Contains($oldSwitch)) {
+            throw "ShouldBakeBones switch line not found"
+          }
+          $c = $c.Replace($oldSwitch, $newSwitch)
+
+          $replacements = @{
+            'cf_t_shoulder_L(work)' = 'cf_t_shoulder_l(work)'
+            'cf_t_elbo_L(work)'     = 'cf_t_elbo_l(work)'
+            'cf_t_hand_L(work)'     = 'cf_t_hand_l(work)'
+            'cf_t_waist_L(work)'    = 'cf_t_waist_l(work)'
+            'cf_t_knee_L(work)'     = 'cf_t_knee_l(work)'
+            'cf_t_leg_L(work)'      = 'cf_t_leg_l(work)'
+            'cf_t_shoulder_R(work)' = 'cf_t_shoulder_r(work)'
+            'cf_t_elbo_R(work)'     = 'cf_t_elbo_r(work)'
+            'cf_t_hand_R(work)'     = 'cf_t_hand_r(work)'
+            'cf_t_waist_R(work)'    = 'cf_t_waist_r(work)'
+            'cf_t_knee_R(work)'     = 'cf_t_knee_r(work)'
+            'cf_t_leg_R(work)'      = 'cf_t_leg_r(work)'
+          }
+
+          foreach ($oldName in $replacements.Keys) {
+            $c = $c.Replace($oldName, $replacements[$oldName])
+          }
+
+          $oldFinger = 'List<GuideObject> guideObjectFK = boneList.Where(targetInfo => transformNames.Contains(targetInfo.guideObject.transformTarget.name)).Select(targetInfo => targetInfo.guideObject).ToList();'
+          $newFinger = 'List<GuideObject> guideObjectFK = boneList.Where(targetInfo => transformNames.Contains(targetInfo.guideObject.transformTarget.name, StringComparer.OrdinalIgnoreCase)).Select(targetInfo => targetInfo.guideObject).ToList();'
+          if (-not $c.Contains($oldFinger)) {
+            throw "FK/finger matching line not found"
+          }
+          $c = $c.Replace($oldFinger, $newFinger)
+
+          $oldEmpty = '            if (interpolableList.Count == 0) return;'
+          if (-not $c.Contains($oldEmpty)) {
+            throw "Silent-return line not found"
+          }
+
+          $newEmptyLines = @(
+            '            if (interpolableList.Count == 0)',
+            '            {',
+            '                ShalltyUtils.Logger.LogWarning("Animation Baking: no enabled HS2 IK/FK targets matched. Check the bake-part toggles and IK/FK state.");',
+            '                ShalltyUtils.Logger.LogMessage("Animation Baking IK targets: " + string.Join(", ", firstChar.listIKTarget.Select(x => x.guideObject.transformTarget.name).ToArray()));',
+            '                return;',
+            '            }'
+          )
+          $newEmpty = $newEmptyLines -join "`r`n"
+          $c = $c.Replace($oldEmpty, $newEmpty)
+
+          Set-Content $file $c -Encoding UTF8
+
+      - name: Build HS2 DLL
+        shell: pwsh
+        run: |
+          msbuild src/ShalltyUtils/ShalltyUtils.HS2/ShalltyUtils.HS2.csproj /t:Build /p:Configuration=Release /m /v:minimal
+
+          if (-not (Test-Path "src/bin/HS2_ShalltyUtils.dll")) {
+            throw "Build completed without expected src/bin/HS2_ShalltyUtils.dll"
+          }
+
+      - name: Upload patched DLL
+        uses: actions/upload-artifact@v4
+        with:
+          name: HS2_ShalltyUtils-1.3.3-patched
+          path: src/bin/HS2_ShalltyUtils.dll
+          if-no-files-found: error
