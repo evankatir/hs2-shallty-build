@@ -54,23 +54,49 @@ jobs:
         run: |
           nuget restore src/ShalltyUtils/ShalltyUtils.HS2/packages.config -PackagesDirectory src/packages -ConfigFile nuget.config -NonInteractive
 
+      - name: Restore .NET Framework 4.6 reference assemblies
+        shell: pwsh
+        run: |
+          nuget install Microsoft.NETFramework.ReferenceAssemblies.net46 -Version 1.0.3 -OutputDirectory src/framework -Source https://api.nuget.org/v3/index.json -NonInteractive
+
+          $mscorlib = Get-ChildItem src/framework -Recurse -File -Filter mscorlib.dll |
+            Where-Object { $_.FullName -match '[\\/]v4\.6[\\/]' } |
+            Select-Object -First 1
+
+          if (-not $mscorlib) {
+            throw ".NET Framework 4.6 reference assemblies were not found"
+          }
+
+          $frameworkPath = Split-Path $mscorlib.FullName -Parent
+
+          Write-Host "Using .NET Framework 4.6 reference assemblies:"
+          Write-Host $frameworkPath
+
+          "FRAMEWORK_PATH=$frameworkPath" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Extract current Timeline DLL
         shell: pwsh
         run: |
           $url = "https://github.com/IllusionMods/HSPlugins/releases/download/r2.25/HS2_HSPlugins_2026-07-30.zip"
+
           Invoke-WebRequest -Uri $url -OutFile hsplugins.zip
 
           New-Item -ItemType Directory -Force -Path hsplugins-root | Out-Null
           Expand-Archive hsplugins.zip -DestinationPath hsplugins-root -Force
 
-          $timeline = Get-ChildItem hsplugins-root -Recurse -File -Filter Timeline.dll | Select-Object -First 1
+          $timeline = Get-ChildItem hsplugins-root -Recurse -File -Filter Timeline.dll |
+            Select-Object -First 1
 
           if (-not $timeline) {
-            $archives = Get-ChildItem hsplugins-root -Recurse -File | Where-Object { $_.Extension -ieq ".zip" }
+            $archives = Get-ChildItem hsplugins-root -Recurse -File |
+              Where-Object { $_.Extension -ieq ".zip" }
+
             $i = 0
 
             foreach ($archive in $archives) {
               $dest = "hsplugins-expanded/$i"
+
               New-Item -ItemType Directory -Force -Path $dest | Out-Null
 
               try {
@@ -83,22 +109,27 @@ jobs:
               $i++
             }
 
-            $timeline = Get-ChildItem hsplugins-expanded -Recurse -File -Filter Timeline.dll -ErrorAction SilentlyContinue | Select-Object -First 1
+            $timeline = Get-ChildItem hsplugins-expanded -Recurse -File -Filter Timeline.dll -ErrorAction SilentlyContinue |
+              Select-Object -First 1
           }
 
           if (-not $timeline) {
             Write-Host "Top-level files:"
-            Get-ChildItem hsplugins-root -Recurse -File | ForEach-Object { Write-Host $_.FullName }
+            Get-ChildItem hsplugins-root -Recurse -File |
+              ForEach-Object { Write-Host $_.FullName }
 
             Write-Host "Expanded files:"
-            Get-ChildItem hsplugins-expanded -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+            Get-ChildItem hsplugins-expanded -Recurse -File -ErrorAction SilentlyContinue |
+              ForEach-Object { Write-Host $_.FullName }
 
             throw "Timeline.dll was not found after expanding nested HSPlugins archives"
           }
 
-          Write-Host "Using Timeline DLL: $($timeline.FullName)"
+          Write-Host "Using Timeline DLL:"
+          Write-Host $timeline.FullName
 
           New-Item -ItemType Directory -Force -Path src/packages/HSPlugins.HoneySelect2 | Out-Null
+
           Copy-Item $timeline.FullName "src/packages/HSPlugins.HoneySelect2/Timeline.dll" -Force
 
       - name: Patch HS2 build configuration and animation baking
@@ -168,6 +199,7 @@ jobs:
           }
 
           $oldFinger = 'List<GuideObject> guideObjectFK = boneList.Where(targetInfo => transformNames.Contains(targetInfo.guideObject.transformTarget.name)).Select(targetInfo => targetInfo.guideObject).ToList();'
+
           $newFinger = 'List<GuideObject> guideObjectFK = boneList.Where(targetInfo => transformNames.Contains(targetInfo.guideObject.transformTarget.name, StringComparer.OrdinalIgnoreCase)).Select(targetInfo => targetInfo.guideObject).ToList();'
 
           if (-not $c.Contains($oldFinger)) {
@@ -192,6 +224,7 @@ jobs:
           )
 
           $newEmpty = $newEmptyLines -join "`r`n"
+
           $c = $c.Replace($oldEmpty, $newEmpty)
 
           Set-Content $file $c -Encoding UTF8
@@ -199,7 +232,7 @@ jobs:
       - name: Build HS2 DLL
         shell: pwsh
         run: |
-          msbuild src/ShalltyUtils/ShalltyUtils.HS2/ShalltyUtils.HS2.csproj /t:Build /p:Configuration=Release /m /v:minimal
+          msbuild src/ShalltyUtils/ShalltyUtils.HS2/ShalltyUtils.HS2.csproj /t:Build /p:Configuration=Release /p:FrameworkPathOverride="$env:FRAMEWORK_PATH" /m /v:minimal
 
           if (-not (Test-Path "src/bin/HS2_ShalltyUtils.dll")) {
             throw "Build completed without expected src/bin/HS2_ShalltyUtils.dll"
