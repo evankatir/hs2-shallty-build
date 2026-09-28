@@ -42,6 +42,10 @@ jobs:
           $file = "ShalltyUtils/ShalltyUtils.Core/TimelineBaking/ShalltyUtils.BakeAnimation.cs"
           $c = Get-Content $file -Raw
 
+          # ------------------------------------------------------------
+          # 1. Make IK target matching case-insensitive
+          # ------------------------------------------------------------
+
           $oldSwitch = 'switch (name)'
           $newSwitch = 'switch ((name ?? string.Empty).ToLowerInvariant())'
 
@@ -51,25 +55,50 @@ jobs:
 
           $c = $c.Replace($oldSwitch, $newSwitch)
 
-          $replacements = @{
-            'cf_t_shoulder_L(work)' = 'cf_t_shoulder_l(work)'
-            'cf_t_elbo_L(work)'     = 'cf_t_elbo_l(work)'
-            'cf_t_hand_L(work)'     = 'cf_t_hand_l(work)'
-            'cf_t_waist_L(work)'    = 'cf_t_waist_l(work)'
-            'cf_t_knee_L(work)'     = 'cf_t_knee_l(work)'
-            'cf_t_leg_L(work)'      = 'cf_t_leg_l(work)'
+          # ------------------------------------------------------------
+          # 2. Replace Koikatsu IK names with the actual HS2 IK names
+          #
+          # HS2:
+          #   hips      = f_t_hips
+          #   shoulder  = f_t_shoulder
+          #   elbow     = f_t_elbo
+          #   hand      = f_t_arm
+          #   hip/thigh = f_t_thigh
+          #   knee      = f_t_knee
+          #   foot      = f_t_leg
+          # ------------------------------------------------------------
 
-            'cf_t_shoulder_R(work)' = 'cf_t_shoulder_r(work)'
-            'cf_t_elbo_R(work)'     = 'cf_t_elbo_r(work)'
-            'cf_t_hand_R(work)'     = 'cf_t_hand_r(work)'
-            'cf_t_waist_R(work)'    = 'cf_t_waist_r(work)'
-            'cf_t_knee_R(work)'     = 'cf_t_knee_r(work)'
-            'cf_t_leg_R(work)'      = 'cf_t_leg_r(work)'
+          $replacements = @{
+            'cf_t_hips(work)'       = 'f_t_hips(work)'
+
+            'cf_t_shoulder_L(work)' = 'f_t_shoulder_l(work)'
+            'cf_t_elbo_L(work)'     = 'f_t_elbo_l(work)'
+            'cf_t_hand_L(work)'     = 'f_t_arm_l(work)'
+
+            'cf_t_shoulder_R(work)' = 'f_t_shoulder_r(work)'
+            'cf_t_elbo_R(work)'     = 'f_t_elbo_r(work)'
+            'cf_t_hand_R(work)'     = 'f_t_arm_r(work)'
+
+            'cf_t_waist_L(work)'    = 'f_t_thigh_l(work)'
+            'cf_t_knee_L(work)'     = 'f_t_knee_l(work)'
+            'cf_t_leg_L(work)'      = 'f_t_leg_l(work)'
+
+            'cf_t_waist_R(work)'    = 'f_t_thigh_r(work)'
+            'cf_t_knee_R(work)'     = 'f_t_knee_r(work)'
+            'cf_t_leg_R(work)'      = 'f_t_leg_r(work)'
           }
 
           foreach ($oldName in $replacements.Keys) {
+            if (-not $c.Contains($oldName)) {
+              throw "Expected animation bake target not found: $oldName"
+            }
+
             $c = $c.Replace($oldName, $replacements[$oldName])
           }
+
+          # ------------------------------------------------------------
+          # 3. Make head/finger FK matching case-insensitive
+          # ------------------------------------------------------------
 
           $oldFinger = 'transformNames.Contains(targetInfo.guideObject.transformTarget.name)'
           $newFinger = 'transformNames.Contains(targetInfo.guideObject.transformTarget.name, StringComparer.OrdinalIgnoreCase)'
@@ -80,6 +109,28 @@ jobs:
 
           $c = $c.Replace($oldFinger, $newFinger)
 
+          # ------------------------------------------------------------
+          # 4. Log the actual HS2 IK targets every time Bake is pressed
+          # ------------------------------------------------------------
+
+          $oldList = '            List<Interpolable> interpolableList = new List<Interpolable>();'
+
+          $newList = @(
+            '            List<Interpolable> interpolableList = new List<Interpolable>();',
+            '',
+            '            ShalltyUtils.Logger.LogMessage("Animation Baking detected IK targets: " + string.Join(", ", firstChar.listIKTarget.Select(x => x.guideObject.transformTarget.name).ToArray()));'
+          ) -join "`r`n"
+
+          if (-not $c.Contains($oldList)) {
+            throw "Interpolable list initialization was not found"
+          }
+
+          $c = $c.Replace($oldList, $newList)
+
+          # ------------------------------------------------------------
+          # 5. Replace silent failure with useful logging
+          # ------------------------------------------------------------
+
           $oldEmpty = '            if (interpolableList.Count == 0) return;'
 
           if (-not $c.Contains($oldEmpty)) {
@@ -89,7 +140,7 @@ jobs:
           $newEmpty = @(
             '            if (interpolableList.Count == 0)',
             '            {',
-            '                ShalltyUtils.Logger.LogWarning("Animation Baking: no HS2 IK/FK bake targets matched.");',
+            '                ShalltyUtils.Logger.LogWarning("Animation Baking: no enabled HS2 IK/FK bake targets matched.");',
             '                ShalltyUtils.Logger.LogMessage("Animation Baking IK targets: " + string.Join(", ", firstChar.listIKTarget.Select(x => x.guideObject.transformTarget.name).ToArray()));',
             '                return;',
             '            }'
@@ -98,6 +149,8 @@ jobs:
           $c = $c.Replace($oldEmpty, $newEmpty)
 
           Set-Content $file $c -Encoding UTF8
+
+          Write-Host "HS2 animation baking patch applied successfully."
 
       - name: Build patched HS2 ShalltyUtils
         working-directory: ShalltyUtils
@@ -119,7 +172,7 @@ jobs:
       - name: Upload patched DLL
         uses: actions/upload-artifact@v4
         with:
-          name: HS2_ShalltyUtils-1.3.1-HS2BakeFix
+          name: HS2_ShalltyUtils-1.3.1-HS2BodyBakeFix
           path: |
             ShalltyUtils/bin/build/ShalltyUtils.HS2/HS2_ShalltyUtils.dll
             ShalltyUtils/bin/out/HS2_ShalltyUtils_v1.3.1.zip
